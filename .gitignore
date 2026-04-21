@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+models/*.pkl
