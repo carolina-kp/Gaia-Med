@@ -54,7 +54,11 @@ export default function RiskMap() {
     let cancelled = false;
     fetch("/api/geojson")
       .then((r) => {
-        if (!r.ok) throw new Error(`Failed: ${r.status}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const ct = r.headers.get("content-type") ?? "";
+        if (!ct.includes("application/json")) {
+          throw new Error("Backend is starting up — please wait ~30 seconds and refresh.");
+        }
         return r.json();
       })
       .then((data: FeatureCollection<Geometry, ApiGeoProps>) => {
