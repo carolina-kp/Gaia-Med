@@ -7,11 +7,14 @@ Start with:
 All endpoints are prefixed /api.
 CORS is open for local development.
 """
+import asyncio
 import json
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.config import GEOJSON_PATH
 from backend.model import load_model, predict_latest, get_timeseries
@@ -23,6 +26,9 @@ from backend.schemas import (
     SummaryResponse,
     TimeseriesResponse,
 )
+
+logger = logging.getLogger("gaiamed")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 app = FastAPI(
     title="GaiaMed API",
@@ -40,12 +46,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Startup: load model once ──────────────────────────────────────────────────
+# ── Readiness flag ────────────────────────────────────────────────────────────
+# Set to True once load_model() completes. Endpoints gate on this so they
+# return a clean 503+Retry-After instead of hanging or crashing.
+_ready = False
+
+
+@app.middleware("http")
+async def readiness_gate(request: Request, call_next):
+    """Return 503 immediately for data endpoints while model is loading."""
+    data_paths = {"/api/risk", "/api/geojson", "/api/summary", "/api/timeseries"}
+    if not _ready and request.url.path in data_paths:
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "5"},
+            content={"detail": "Model loading, please retry shortly."},
+        )
+    return await call_next(request)
+
+
+# ── Startup: load model once in a background thread ──────────────────────────
 
 @app.on_event("startup")
 async def startup_event():
-    """Load (or train) the model at startup so the first request is not slow."""
-    load_model()
+    """Load the model off the event loop so HTTP handling starts immediately."""
+    global _ready
+
+    async def _load():
+        global _ready
+        try:
+            logger.info("Loading model…")
+            await asyncio.to_thread(load_model)
+            logger.info("Model ready.")
+            _ready = True
+        except Exception:
+            logger.exception("Model load failed — check that rf_model.pkl is present.")
+
+    asyncio.create_task(_load())
 
 
 # ── /api/health ───────────────────────────────────────────────────────────────

@@ -6,4 +6,4 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
-models/*.pkl
+# models/*.pkl is intentionally tracked so Render has it at deploy time
