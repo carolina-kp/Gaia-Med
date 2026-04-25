@@ -12,6 +12,39 @@ interface ApiZone {
 }
 
 let _cache: ZoneRisk[] | null = null;
+
+const MAX_ATTEMPTS = 6;
+const BASE_DELAY_MS = 3000;
+
+async function fetchWithRetry(): Promise<ZoneRisk[]> {
+  for (let n = 1; n <= MAX_ATTEMPTS; n++) {
+    try {
+      const r = await fetch("/api/risk");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = (await r.json()) as { zones: ApiZone[] };
+      const list = d.zones.map((z) =>
+        buildRiskFromApiFeature({
+          cell_id: z.cell_id,
+          place_name: z.place_name,
+          stress_prob: z.stress_prob,
+          risk_level: z.risk_level,
+          ndvi_mean: z.ndvi_mean,
+          precip_mm: z.precip_mm,
+          temp_c: z.temp_c,
+        })
+      );
+      _cache = list;
+      return list;
+    } catch (e) {
+      if (n >= MAX_ATTEMPTS) throw e;
+      const delay = BASE_DELAY_MS * Math.pow(2, n - 1);
+      console.warn(`[GaiaMed] /api/risk retrying in ${delay / 1000}s (attempt ${n}/${MAX_ATTEMPTS})…`);
+      await new Promise((res) => setTimeout(res, delay));
+    }
+  }
+  throw new Error("Unreachable");
+}
+
 let _promise: Promise<ZoneRisk[]> | null = null;
 
 export function useZones(): { zones: ZoneRisk[]; loading: boolean; error: string | null } {
@@ -21,28 +54,7 @@ export function useZones(): { zones: ZoneRisk[]; loading: boolean; error: string
 
   useEffect(() => {
     if (_cache) return;
-    if (!_promise) {
-      _promise = fetch("/api/risk")
-        .then((r) => {
-          if (!r.ok) throw new Error(`Failed: ${r.status}`);
-          return r.json() as Promise<{ zones: ApiZone[] }>;
-        })
-        .then((d) => {
-          const list = d.zones.map((z) =>
-            buildRiskFromApiFeature({
-              cell_id: z.cell_id,
-              place_name: z.place_name,
-              stress_prob: z.stress_prob,
-              risk_level: z.risk_level,
-              ndvi_mean: z.ndvi_mean,
-              precip_mm: z.precip_mm,
-              temp_c: z.temp_c,
-            })
-          );
-          _cache = list;
-          return list;
-        });
-    }
+    if (!_promise) _promise = fetchWithRetry();
     _promise
       .then((list) => {
         setZones(list);

@@ -47,27 +47,46 @@ export default function RiskMap() {
   const [flyTarget, setFlyTarget] = useState<{ bounds: LatLngBoundsExpression } | null>(null);
   const [geo, setGeo] = useState<FeatureCollection<Geometry, ApiGeoProps> | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const layerRef = useRef<L.GeoJSON | null>(null);
 
-  // Fetch enriched GeoJSON from the backend API
+  // Fetch enriched GeoJSON from the backend API with exponential backoff
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/geojson")
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const MAX_ATTEMPTS = 6;
+    const BASE_DELAY_MS = 3000;
+
+    async function attempt(n: number): Promise<void> {
+      if (cancelled) return;
+      try {
+        const r = await fetch("/api/geojson");
         const ct = r.headers.get("content-type") ?? "";
-        if (!ct.includes("application/json")) {
-          throw new Error("Backend is starting up — please wait ~30 seconds and refresh.");
+        if (!r.ok || !ct.includes("application/json")) {
+          // Capture raw text to expose the real backend error
+          const body = await r.text().catch(() => "(unreadable)");
+          console.error(`[GaiaMed] /api/geojson attempt ${n} failed — status ${r.status}, content-type: "${ct}", body:`, body);
+          throw new Error(`HTTP ${r.status} — ${ct || "non-JSON response"}`);
         }
-        return r.json();
-      })
-      .then((data: FeatureCollection<Geometry, ApiGeoProps>) => {
+        const data: FeatureCollection<Geometry, ApiGeoProps> = await r.json();
         if (data.features?.[0]) {
           console.log("[GaiaMed] first feature props:", data.features[0].properties);
         }
         if (!cancelled) setGeo(data);
-      })
-      .catch((e) => !cancelled && setLoadError(String(e)));
+      } catch (e) {
+        if (cancelled) return;
+        if (n >= MAX_ATTEMPTS) {
+          setLoadError(String(e));
+          return;
+        }
+        const delay = BASE_DELAY_MS * Math.pow(2, n - 1); // 3s, 6s, 12s, 24s, 48s
+        console.warn(`[GaiaMed] retrying in ${delay / 1000}s (attempt ${n}/${MAX_ATTEMPTS})…`);
+        if (!cancelled) setRetryAttempt(n);
+        await new Promise((res) => setTimeout(res, delay));
+        return attempt(n + 1);
+      }
+    }
+
+    attempt(1);
     return () => { cancelled = true; };
   }, []);
 
@@ -290,7 +309,9 @@ export default function RiskMap() {
           <div className="absolute inset-0 z-[400] flex items-center justify-center bg-background/40 backdrop-blur-sm">
             <div className="flex items-center gap-2 px-4 py-2 rounded-full glass-card text-[12px] text-muted-foreground">
               <Loader2 className="w-4 h-4 animate-spin text-sand" />
-              Loading Andalusia municipalities…
+              {retryAttempt > 0
+                ? `Backend warming up — retrying (${retryAttempt}/6)…`
+                : "Loading Andalusia municipalities…"}
             </div>
           </div>
         )}
