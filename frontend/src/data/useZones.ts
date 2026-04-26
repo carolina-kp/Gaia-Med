@@ -38,7 +38,7 @@ async function fetchWithRetry(): Promise<ZoneRisk[]> {
     } catch (e) {
       if (n >= MAX_ATTEMPTS) throw e;
       const delay = BASE_DELAY_MS * Math.pow(2, n - 1);
-      console.warn(`[GaiaMed] /api/risk retrying in ${delay / 1000}s (attempt ${n}/${MAX_ATTEMPTS})…`);
+      // retry after exponential backoff
       await new Promise((res) => setTimeout(res, delay));
     }
   }

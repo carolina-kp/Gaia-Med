@@ -1,8 +1,11 @@
 """
-model.py — train, save, load, and predict with the GaiaMed RandomForest.
+Model lifecycle management for GaiaMed.
 
-Module-level singletons ensure the model is loaded once at startup,
-not per request.
+Handles training, persisting, loading, and inference for the RandomForest
+classifier that predicts vegetation stress 2 months ahead.
+
+Module-level singletons ensure the model is loaded once at startup, not
+once per request.
 """
 import pickle
 from typing import Optional
@@ -23,37 +26,43 @@ from backend.config import (
 )
 from backend.pipeline import build_features, get_feature_cols, load_place_names, _name_from_cell_id
 
-# ── Module-level singletons (populated on first load_model() call) ──────────
+# Module-level singletons — populated on the first load_model() call.
 _model: Optional[RandomForestClassifier] = None
-_feature_cols: Optional[list] = None
-_model_meta: Optional[dict] = None  # {"metrics": {...}, "feature_importance": {...}}
-_predictions: Optional[dict] = None  # cached output of predict_latest()
+_feature_cols: Optional[list[str]] = None
+_model_meta: Optional[dict] = None
+_predictions: Optional[dict] = None
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+def _traffic_light(prob: float) -> str:
+    """Map a stress probability to a risk label.
 
-def traffic_light(prob: float) -> str:
+    Args:
+        prob: Predicted stress probability in [0, 1].
+
+    Returns:
+        "low", "moderate", or "high".
+    """
     if prob < RISK_LOW_MAX:
         return "low"
-    elif prob < RISK_MODERATE_MAX:
+    if prob < RISK_MODERATE_MAX:
         return "moderate"
     return "high"
 
 
-# ── Training ─────────────────────────────────────────────────────────────────
-
 def train_and_save() -> dict:
-    """
-    Run the full training pipeline, persist the model to disk, and
-    return metrics + feature importance.
+    """Train the RandomForest on all available data and persist it to disk.
+
+    Uses a time-aware train/test split: the last TEST_MONTHS months are held
+    out for evaluation so no future data leaks into training.
+
+    Returns:
+        Dict with "metrics" (accuracy, ROC-AUC) and "feature_importance".
     """
     df = build_features()
     feature_cols = get_feature_cols(df)
 
-    # Drop rows where target or any feature is NaN
     model_df = df.dropna(subset=["stress_next"] + feature_cols).copy()
 
-    # Time-aware split — last TEST_MONTHS held out for evaluation
     max_month = model_df["month_num"].max()
     train_df = model_df[model_df["month_num"] <= max_month - TEST_MONTHS]
     test_df = model_df[model_df["month_num"] > max_month - TEST_MONTHS]
@@ -71,6 +80,7 @@ def train_and_save() -> dict:
 
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
+
     metrics = {
         "test_accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
         "test_roc_auc": round(float(roc_auc_score(y_test, y_prob)), 4),
@@ -99,28 +109,23 @@ def train_and_save() -> dict:
     return {"metrics": metrics, "feature_importance": feature_importance}
 
 
-# ── Loading ───────────────────────────────────────────────────────────────────
+def load_model() -> tuple[RandomForestClassifier, list[str], dict]:
+    """Return the trained model from the singleton cache.
 
-def load_model() -> tuple:
-    """
-    Return (model, feature_cols, meta) from the singleton cache.
-    Trains and saves automatically if the pickle doesn't exist yet.
+    Loads from rf_model.pkl on the first call. If the pickle does not exist,
+    trains the model from scratch and saves it first.
+
+    Returns:
+        Tuple of (model, feature_cols, meta) where meta contains metrics and
+        feature_importance dicts.
     """
     global _model, _feature_cols, _model_meta
 
     if _model is not None:
-        return _model, _feature_cols, _model_meta
+        return _model, _feature_cols, _model_meta  # type: ignore[return-value]
 
     if not MODEL_PATH.exists():
-        print("Model not found — training now...")
         _model_meta = train_and_save()
-    else:
-        with open(MODEL_PATH, "rb") as fh:
-            data = pickle.load(fh)
-        _model_meta = {
-            "metrics": data["metrics"],
-            "feature_importance": data["feature_importance"],
-        }
 
     with open(MODEL_PATH, "rb") as fh:
         data = pickle.load(fh)
@@ -132,15 +137,18 @@ def load_model() -> tuple:
         "feature_importance": data["feature_importance"],
     }
 
-    return _model, _feature_cols, _model_meta
+    return _model, _feature_cols, _model_meta  # type: ignore[return-value]
 
-
-# ── Prediction ────────────────────────────────────────────────────────────────
 
 def predict_latest() -> dict:
-    """
-    Predict stress probability for all cells using the most recent month's data.
-    Result is cached in-process after the first call.
+    """Predict vegetation stress for every cell using the most recent month's data.
+
+    The result is cached in-process after the first call — subsequent requests
+    return the same dict without re-running inference.
+
+    Returns:
+        Dict with keys: predicted_for, generated_at, metrics,
+        feature_importance, zones (list of per-cell dicts).
     """
     global _predictions
     if _predictions is not None:
@@ -152,14 +160,13 @@ def predict_latest() -> dict:
 
     latest_month = df["month"].max()
     latest_df = df[df["month"] == latest_month].copy()
-
-    # Only predict rows that have all required features
     valid = latest_df.dropna(subset=feature_cols).copy()
-    probs = model.predict_proba(valid[feature_cols])[:, 1]
-    valid["stress_prob"] = probs
-    valid["risk_level"] = valid["stress_prob"].apply(traffic_light)
 
-    # Prediction horizon: 2 months ahead of latest
+    probs = model.predict_proba(valid[feature_cols])[:, 1]
+    valid = valid.copy()
+    valid["stress_prob"] = probs
+    valid["risk_level"] = valid["stress_prob"].apply(_traffic_light)
+
     predicted_for = (latest_month + pd.DateOffset(months=2)).strftime("%Y-%m")
 
     zones = [
@@ -188,24 +195,26 @@ def predict_latest() -> dict:
 
 
 def get_timeseries() -> dict:
-    """
-    Return observed vs model-predicted stress fraction across all months
-    that have valid stress_next labels.
+    """Compute observed vs predicted stress fraction across all labeled months.
 
-    Each data point corresponds to a TARGET month (feature_month + 2):
-      'observed'  = fraction of cells actually stressed in the target month
-      'predicted' = mean model-predicted probability (made from feature_month data)
+    Each data point corresponds to a target month (feature_month + 2):
+      - "observed": fraction of cells actually stressed in that month.
+      - "predicted": mean model-predicted probability from feature_month data.
 
-    This covers all 18 months where ground truth exists, giving the frontend
-    a meaningful chart of how well the 2-month-ahead forecast tracks reality.
+    Covers all months where ground-truth labels exist, giving the Analytics
+    page a meaningful view of how well the 2-month-ahead forecast tracks reality.
+
+    Returns:
+        Dict with parallel lists: months (str), observed (float), predicted (float).
     """
     model, feature_cols, _ = load_model()
     df = build_features()
-
-    # Only rows where we have both features and a ground-truth label
     valid_df = df.dropna(subset=feature_cols + ["stress_next"]).copy()
 
-    months_out, observed, predicted = [], [], []
+    months_out: list[str] = []
+    observed: list[float] = []
+    predicted: list[float] = []
+
     for month, grp in valid_df.groupby("month"):
         probs = model.predict_proba(grp[feature_cols])[:, 1]
         target_month = (month + pd.DateOffset(months=2)).strftime("%Y-%m")

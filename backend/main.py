@@ -1,16 +1,15 @@
 """
-main.py — FastAPI application for GaiaMed.
+FastAPI application entry point for GaiaMed.
 
 Start with:
     uvicorn backend.main:app --reload
 
-All endpoints are prefixed /api.
-CORS is open for local development.
+All endpoints are prefixed /api. The model, CSV data, and GeoJSON are loaded
+once at startup into module-level caches so every subsequent request is O(1).
 """
 import asyncio
 import json
 import logging
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,9 +17,8 @@ from fastapi.responses import JSONResponse
 
 from backend.config import GEOJSON_PATH
 from backend.model import load_model, predict_latest, get_timeseries
-from backend.pipeline import build_features, load_place_names, _name_from_cell_id
+from backend.pipeline import load_place_names, _name_from_cell_id
 from backend.schemas import (
-    GeoJSONResponse,
     HealthResponse,
     RiskResponse,
     SummaryResponse,
@@ -30,8 +28,12 @@ from backend.schemas import (
 logger = logging.getLogger("gaiamed")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-# ── In-memory caches (populated once at startup) ──────────────────────────────
+# Populated once at startup; None means loading is still in progress.
 _geojson_cache: dict | None = None
+
+# Flipped to True only after both the model and GeoJSON finish loading.
+# Data endpoints return 503 until this is True.
+_ready = False
 
 app = FastAPI(
     title="GaiaMed API",
@@ -49,52 +51,67 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Readiness flag ────────────────────────────────────────────────────────────
-# Set to True once load_model() completes. Endpoints gate on this so they
-# return a clean 503+Retry-After instead of hanging or crashing.
-_ready = False
-
 
 @app.middleware("http")
 async def readiness_gate(request: Request, call_next):
-    """Return 503 immediately for data endpoints while model is loading."""
+    """Block data endpoints with 503 while the model is still loading.
+
+    /api/health is intentionally excluded so the frontend can poll it
+    immediately without waiting for the model to be ready.
+    """
     data_paths = {"/api/risk", "/api/geojson", "/api/summary", "/api/timeseries"}
     if not _ready and request.url.path in data_paths:
         return JSONResponse(
             status_code=503,
             headers={"Retry-After": "5"},
-            content={"detail": "Model loading, please retry shortly."},
+            content={"detail": "Model loading — please retry in a few seconds."},
         )
     return await call_next(request)
 
 
-# ── Startup: load model once in a background thread ──────────────────────────
-
 @app.on_event("startup")
-async def startup_event():
-    """Load the model and all data files off the event loop so HTTP handling starts immediately."""
+async def startup_event() -> None:
+    """Kick off background loading so the server accepts HTTP immediately.
+
+    Sequence:
+      1. Load rf_model.pkl (RandomForest + metadata) into memory.
+      2. Build the enriched GeoJSON FeatureCollection and cache it.
+      3. Set _ready = True — data endpoints become available.
+    """
+    asyncio.create_task(_load_all())
+
+
+async def _load_all() -> None:
+    """Background task: load model then GeoJSON, then mark the app ready."""
     global _ready, _geojson_cache
+    try:
+        logger.info("Loading model…")
+        await asyncio.to_thread(load_model)
+        logger.info("Model ready.")
 
-    async def _load():
-        global _ready, _geojson_cache
-        try:
-            logger.info("Loading model…")
-            await asyncio.to_thread(load_model)
-            logger.info("Model ready.")
+        logger.info("Pre-loading GeoJSON into memory…")
+        _geojson_cache = await asyncio.to_thread(_build_geojson)
+        logger.info("GeoJSON cached (%d features).", len(_geojson_cache.get("features", [])))
 
-            logger.info("Pre-loading GeoJSON into memory…")
-            _geojson_cache = await asyncio.to_thread(_build_geojson)
-            logger.info("GeoJSON cached (%d features).", len(_geojson_cache.get("features", [])))
-
-            _ready = True
-        except Exception:
-            logger.exception("Startup load failed — check that rf_model.pkl and data files are present.")
-
-    asyncio.create_task(_load())
+        _ready = True
+        logger.info("GaiaMed API ready.")
+    except Exception:
+        logger.exception("Startup failed — verify rf_model.pkl and data files are present.")
 
 
 def _build_geojson() -> dict:
-    """Build the enriched GeoJSON FeatureCollection (runs in a thread at startup)."""
+    """Build the enriched GeoJSON FeatureCollection from disk + model predictions.
+
+    Reads the raw polygon geometries, merges in the latest stress predictions
+    from the model, and returns a GeoJSON FeatureCollection dict ready to be
+    served directly to the frontend map layer.
+
+    Returns:
+        A GeoJSON FeatureCollection dict with enriched polygon properties.
+
+    Raises:
+        FileNotFoundError: If the GeoJSON source file is missing.
+    """
     if not GEOJSON_PATH.exists():
         raise FileNotFoundError(f"GeoJSON file not found: {GEOJSON_PATH}")
 
@@ -106,56 +123,55 @@ def _build_geojson() -> dict:
     pred_lookup = {z["cell_id"]: z for z in predictions["zones"]}
     latest_month = predictions["generated_at"]
 
+    # Keep only the features for the most recent month (one polygon per cell).
+    # Fall back to all features if the GeoJSON lacks a month property.
     latest_features = [
         f for f in geo["features"]
         if f.get("properties", {}).get("month") == latest_month
-    ]
-    if not latest_features:
-        latest_features = geo["features"]
+    ] or geo["features"]
 
     enriched = []
     for feature in latest_features:
         cell_id = feature.get("properties", {}).get("cell_id")
         pred = pred_lookup.get(cell_id, {})
-        feature["properties"].update(
-            {
-                "place_name": pred.get(
-                    "place_name",
-                    place_names.get(cell_id, _name_from_cell_id(cell_id)),
-                ),
-                "stress_prob": pred.get("stress_prob"),
-                "risk_level": pred.get("risk_level"),
-                "ndvi_mean": pred.get("ndvi_mean"),
-                "precip_mm": pred.get("precip_mm"),
-                "temp_c": pred.get("temp_c"),
-            }
-        )
+        feature["properties"].update({
+            "place_name": pred.get("place_name", place_names.get(cell_id, _name_from_cell_id(cell_id))),
+            "stress_prob": pred.get("stress_prob"),
+            "risk_level": pred.get("risk_level"),
+            "ndvi_mean": pred.get("ndvi_mean"),
+            "precip_mm": pred.get("precip_mm"),
+            "temp_c": pred.get("temp_c"),
+        })
         feature["properties"].pop("month", None)
         enriched.append(feature)
 
     return {"type": "FeatureCollection", "features": enriched}
 
 
-# ── /api/health ───────────────────────────────────────────────────────────────
-
 @app.get("/api/health", response_model=HealthResponse, tags=["Status"])
-def health():
-    """Returns API health immediately — no model or file I/O. Used by frontend warm-up ping."""
-    return HealthResponse(
-        status="ok",
-        model_loaded=_ready,
-        latest_month=None,
-    )
+def health() -> HealthResponse:
+    """Return API liveness status immediately — no I/O, no model access.
 
+    Used by the frontend warm-up ping loop to detect when the server has
+    finished loading after a cold start.
 
-# ── /api/risk ─────────────────────────────────────────────────────────────────
+    Returns:
+        HealthResponse with status "ok" and model_loaded flag.
+    """
+    return HealthResponse(status="ok", model_loaded=_ready)
+
 
 @app.get("/api/risk", response_model=RiskResponse, tags=["Predictions"])
-def risk():
-    """
-    Risk predictions for all grid cells based on the most recent data month.
-    Predictions are for 2 months ahead of the latest available data.
-    Includes feature importances so the frontend can explain WHY a zone is flagged.
+def risk() -> RiskResponse:
+    """Return stress-risk predictions for every grid cell.
+
+    Predictions cover 2 months ahead of the latest available satellite data.
+    Includes per-feature importance scores so the frontend can explain each
+    zone's risk level.
+
+    Returns:
+        RiskResponse with predicted_for date, metrics, feature importances,
+        and a list of per-zone predictions.
     """
     result = predict_latest()
     return RiskResponse(
@@ -167,49 +183,63 @@ def risk():
     )
 
 
-# ── /api/geojson ──────────────────────────────────────────────────────────────
-
 @app.get("/api/geojson", tags=["Map"])
-def geojson():
-    """
-    GeoJSON FeatureCollection of the 578 grid polygons enriched with stress
-    predictions for the latest month. Served from the in-memory cache built at startup.
+def geojson() -> dict:
+    """Return the enriched GeoJSON FeatureCollection for the choropleth map.
+
+    Serves 578 Andalusian municipality polygons enriched with stress_prob,
+    risk_level, ndvi_mean, precip_mm, and temp_c from the latest model run.
+    Served from the in-memory cache built at startup — no disk I/O per request.
+
+    Returns:
+        GeoJSON FeatureCollection dict.
+
+    Raises:
+        HTTPException 503: If the cache has not been populated yet.
     """
     if _geojson_cache is None:
         raise HTTPException(status_code=503, detail="GeoJSON not yet loaded — retry shortly.")
     return _geojson_cache
 
 
-# ── /api/timeseries ───────────────────────────────────────────────────────────
-
 @app.get("/api/timeseries", response_model=TimeseriesResponse, tags=["Analytics"])
-def timeseries():
-    """
-    Observed vs predicted stress fraction per month for the held-out test period.
-    Used to render the time-evolution chart in the dashboard.
+def timeseries() -> TimeseriesResponse:
+    """Return observed vs predicted stress fraction per month over the test period.
+
+    Each data point represents one calendar month. "Observed" is the fraction
+    of cells that were actually stressed; "predicted" is the mean model
+    probability emitted 2 months earlier. Used to render the time-evolution
+    chart on the Analytics page.
+
+    Returns:
+        TimeseriesResponse with parallel lists: months, observed, predicted.
     """
     return get_timeseries()
 
 
-# ── /api/summary ──────────────────────────────────────────────────────────────
-
 @app.get("/api/summary", response_model=SummaryResponse, tags=["Analytics"])
-def summary():
-    """
-    Aggregated stats for the dashboard header cards.
-    Counts zones by risk level and identifies the most stressed zone.
+def summary() -> SummaryResponse:
+    """Return aggregated statistics for the dashboard header cards.
+
+    Counts zones by risk level (high / moderate / low), computes the average
+    stress probability, and identifies the single most-stressed zone.
+
+    Returns:
+        SummaryResponse with zone counts and most-stressed zone name.
+
+    Raises:
+        HTTPException 500: If no prediction data is available.
     """
     result = predict_latest()
     zones = result["zones"]
 
     if not zones:
-        raise HTTPException(status_code=500, detail="No prediction data available")
+        raise HTTPException(status_code=500, detail="No prediction data available.")
 
     high = sum(1 for z in zones if z["risk_level"] == "high")
     moderate = sum(1 for z in zones if z["risk_level"] == "moderate")
     low = sum(1 for z in zones if z["risk_level"] == "low")
     avg_prob = round(sum(z["stress_prob"] for z in zones) / len(zones), 4)
-
     most_stressed = max(zones, key=lambda z: z["stress_prob"])
 
     return SummaryResponse(

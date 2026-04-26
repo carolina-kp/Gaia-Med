@@ -87,8 +87,6 @@ export default function RiskMap() {
         const r = await fetch("/api/geojson");
         const ct = r.headers.get("content-type") ?? "";
         if (!r.ok || !ct.includes("application/json")) {
-          const body = await r.text().catch(() => "(unreadable)");
-          console.error(`[GaiaMed] /api/geojson failed — status ${r.status}, body:`, body);
           throw new Error(`HTTP ${r.status} — ${ct || "non-JSON response"}`);
         }
         const data: FeatureCollection<Geometry, ApiGeoProps> = await r.json();

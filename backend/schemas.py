@@ -1,21 +1,25 @@
 """
-schemas.py — Pydantic response models for all GaiaMed API endpoints.
+Pydantic response models for all GaiaMed API endpoints.
+
+Each model is the single source of truth for what a given endpoint returns,
+and also drives the auto-generated OpenAPI docs at /docs.
 """
 from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
 
 
-# ── /api/health ───────────────────────────────────────────────────────────────
-
 class HealthResponse(BaseModel):
+    """Response for GET /api/health."""
+
     status: str
     model_loaded: bool
     latest_month: Optional[str] = None
 
 
-# ── /api/risk ─────────────────────────────────────────────────────────────────
-
 class ZonePrediction(BaseModel):
+    """Per-cell stress prediction included in RiskResponse."""
+
     cell_id: str
     place_name: str
     lat: float
@@ -28,11 +32,15 @@ class ZonePrediction(BaseModel):
 
 
 class ModelMetrics(BaseModel):
+    """Hold-out test-set evaluation metrics."""
+
     test_accuracy: float
     test_roc_auc: float
 
 
 class RiskResponse(BaseModel):
+    """Response for GET /api/risk."""
+
     predicted_for: str
     generated_at: str
     model_metrics: ModelMetrics
@@ -40,24 +48,24 @@ class RiskResponse(BaseModel):
     zones: List[ZonePrediction]
 
 
-# ── /api/geojson ──────────────────────────────────────────────────────────────
-
 class GeoJSONResponse(BaseModel):
+    """Response for GET /api/geojson (schema reference only; endpoint returns raw dict)."""
+
     type: str = "FeatureCollection"
     features: List[Dict[str, Any]]
 
 
-# ── /api/timeseries ───────────────────────────────────────────────────────────
-
 class TimeseriesResponse(BaseModel):
+    """Response for GET /api/timeseries."""
+
     months: List[str]
     observed: List[float]
     predicted: List[float]
 
 
-# ── /api/summary ──────────────────────────────────────────────────────────────
-
 class SummaryResponse(BaseModel):
+    """Response for GET /api/summary."""
+
     total_zones: int
     high_risk: int
     moderate_risk: int
