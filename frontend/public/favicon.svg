@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- Dark background circle -->
+  <rect width="32" height="32" rx="8" fill="#1a1f16"/>
+  <!-- Leaf shape: a curved teardrop pointing upper-right -->
+  <path
+    d="M22 6C22 6 8 8 8 20C8 20 14 14 22 6Z"
+    fill="#6aaa64"
+  />
+  <!-- Stem -->
+  <line x1="8" y1="20" x2="14" y2="26" stroke="#6aaa64" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

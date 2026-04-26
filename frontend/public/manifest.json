@@ -1,0 +1,17 @@
+{
+  "name": "GaiaMind-Med",
+  "short_name": "GaiaMed",
+  "description": "AI vegetation stress early-warning for Andalusia",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1a1f16",
+  "theme_color": "#1a1f16",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
