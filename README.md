@@ -44,7 +44,7 @@ Built as a university project at ESADE, 2025–2026.
 | Backend | Python 3.11, FastAPI, Uvicorn |
 | ML model | scikit-learn RandomForestClassifier (300 trees) |
 | Data | Google Earth Engine exports (CSV + GeoJSON) |
-| Backend hosting | Fly.io (shared-cpu-1x, 512 MB, always-on) |
+| Backend hosting | Fly.io (shared-cpu-1x, 512 MB, always-on, Paris) |
 | Frontend hosting | Vercel |
 
 ---
@@ -69,17 +69,16 @@ Gaia_Med/
 │   │   ├── data/        # useZones hook, zone type definitions
 │   │   ├── pages/       # Index (map), Analytics, About, NotFound
 │   │   └── lib/         # Shared utilities
+│   ├── public/          # favicon.svg, manifest.json
 │   ├── .env.example     # Environment variable template
-│   ├── vercel.json      # Vercel rewrite: /api/* → Fly.io backend
 │   └── vite.config.ts
+├── vercel.json          # Vercel build config + /api/* rewrite to Fly.io
 ├── data/                # Satellite data exports (not committed if large)
 ├── models/              # Trained model weights (rf_model.pkl)
 ├── notebooks/
 │   └── gaia_med_prototype.py  # Original Colab exploration notebook
 ├── docker-compose.yml   # Local full-stack development
-├── fly.toml             # Fly.io backend deployment config
-├── render.yaml          # Legacy Render config (superseded by Fly.io)
-└── README.md
+└── fly.toml             # Fly.io backend deployment config
 ```
 
 ---
@@ -139,7 +138,7 @@ docker-compose up --build
 |---|---|---|
 | `VITE_API_TARGET` | URL of the FastAPI backend | `http://localhost:8000` |
 
-In production on Vercel, this variable is not needed — `frontend/vercel.json` rewrites `/api/*` directly to the Fly.io backend URL.
+In production on Vercel, this variable is not needed — `vercel.json` rewrites `/api/*` directly to the Fly.io backend URL.
 
 ### Backend
 
@@ -173,17 +172,17 @@ The backend uses no environment variables. All configuration is in `backend/conf
 
 ## Deployment
 
+### Frontend (Vercel)
+
+Push to `main` — Vercel auto-deploys. The `/api/*` rewrite in `vercel.json` proxies all API calls to the Fly.io backend. No environment variables are needed in the Vercel dashboard.
+
 ### Backend (Fly.io)
 
 ```bash
-# Install Fly CLI, then:
+# Install the Fly CLI, then from the project root:
 fly auth login
 fly deploy
 fly status
 ```
 
-The Dockerfile pre-trains the model at image build time (`python backend/train.py`), so the container starts with `rf_model.pkl` already present and cold-start time is minimal.
-
-### Frontend (Vercel)
-
-Push to `main` — Vercel auto-deploys. The `/api/*` rewrite in `frontend/vercel.json` proxies all API calls to the Fly.io backend.
+The Dockerfile pre-trains the model at image build time (`python backend/train.py`), so the container starts with `rf_model.pkl` already present. The app is configured as always-on (`auto_stop_machines = 'off'`, `min_machines_running = 1`) and runs in the Paris region.
