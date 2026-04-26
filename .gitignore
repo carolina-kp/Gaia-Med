@@ -24,6 +24,9 @@ frontend/.env.local
 # models/*.pkl is intentionally tracked so Docker builds start with a pre-trained model.
 # If the file grows too large for git, store it in Git LFS or regenerate at build time.
 
+# Claude Code local config
+.claude/
+
 # macOS / editors
 .DS_Store
 .idea/
