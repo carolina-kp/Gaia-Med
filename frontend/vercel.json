@@ -5,7 +5,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://gaiamed-api.onrender.com/api/:path*"
+      "destination": "https://gaiamed-api.fly.dev/api/:path*"
     },
     {
       "source": "/(.*)",
