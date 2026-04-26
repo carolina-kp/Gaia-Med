@@ -10,7 +10,7 @@ from pydantic import BaseModel
 class HealthResponse(BaseModel):
     status: str
     model_loaded: bool
-    latest_month: str
+    latest_month: Optional[str] = None
 
 
 # ── /api/risk ─────────────────────────────────────────────────────────────────

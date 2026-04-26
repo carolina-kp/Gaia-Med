@@ -30,6 +30,9 @@ from backend.schemas import (
 logger = logging.getLogger("gaiamed")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+# ── In-memory caches (populated once at startup) ──────────────────────────────
+_geojson_cache: dict | None = None
+
 app = FastAPI(
     title="GaiaMed API",
     description=(
@@ -69,40 +72,79 @@ async def readiness_gate(request: Request, call_next):
 
 @app.on_event("startup")
 async def startup_event():
-    """Load the model off the event loop so HTTP handling starts immediately."""
-    global _ready
+    """Load the model and all data files off the event loop so HTTP handling starts immediately."""
+    global _ready, _geojson_cache
 
     async def _load():
-        global _ready
+        global _ready, _geojson_cache
         try:
             logger.info("Loading model…")
             await asyncio.to_thread(load_model)
             logger.info("Model ready.")
+
+            logger.info("Pre-loading GeoJSON into memory…")
+            _geojson_cache = await asyncio.to_thread(_build_geojson)
+            logger.info("GeoJSON cached (%d features).", len(_geojson_cache.get("features", [])))
+
             _ready = True
         except Exception:
-            logger.exception("Model load failed — check that rf_model.pkl is present.")
+            logger.exception("Startup load failed — check that rf_model.pkl and data files are present.")
 
     asyncio.create_task(_load())
+
+
+def _build_geojson() -> dict:
+    """Build the enriched GeoJSON FeatureCollection (runs in a thread at startup)."""
+    if not GEOJSON_PATH.exists():
+        raise FileNotFoundError(f"GeoJSON file not found: {GEOJSON_PATH}")
+
+    with open(GEOJSON_PATH, "r", encoding="utf-8") as fh:
+        geo = json.load(fh)
+
+    predictions = predict_latest()
+    place_names = load_place_names()
+    pred_lookup = {z["cell_id"]: z for z in predictions["zones"]}
+    latest_month = predictions["generated_at"]
+
+    latest_features = [
+        f for f in geo["features"]
+        if f.get("properties", {}).get("month") == latest_month
+    ]
+    if not latest_features:
+        latest_features = geo["features"]
+
+    enriched = []
+    for feature in latest_features:
+        cell_id = feature.get("properties", {}).get("cell_id")
+        pred = pred_lookup.get(cell_id, {})
+        feature["properties"].update(
+            {
+                "place_name": pred.get(
+                    "place_name",
+                    place_names.get(cell_id, _name_from_cell_id(cell_id)),
+                ),
+                "stress_prob": pred.get("stress_prob"),
+                "risk_level": pred.get("risk_level"),
+                "ndvi_mean": pred.get("ndvi_mean"),
+                "precip_mm": pred.get("precip_mm"),
+                "temp_c": pred.get("temp_c"),
+            }
+        )
+        feature["properties"].pop("month", None)
+        enriched.append(feature)
+
+    return {"type": "FeatureCollection", "features": enriched}
 
 
 # ── /api/health ───────────────────────────────────────────────────────────────
 
 @app.get("/api/health", response_model=HealthResponse, tags=["Status"])
 def health():
-    """Returns API health and whether the model is loaded."""
-    try:
-        model, _, _ = load_model()
-        model_loaded = model is not None
-    except Exception:
-        model_loaded = False
-
-    df = build_features()
-    latest_month = df["month"].max().strftime("%Y-%m")
-
+    """Returns API health immediately — no model or file I/O. Used by frontend warm-up ping."""
     return HealthResponse(
         status="ok",
-        model_loaded=model_loaded,
-        latest_month=latest_month,
+        model_loaded=_ready,
+        latest_month=None,
     )
 
 
@@ -131,53 +173,11 @@ def risk():
 def geojson():
     """
     GeoJSON FeatureCollection of the 578 grid polygons enriched with stress
-    predictions for the latest month. Used to render the choropleth map.
+    predictions for the latest month. Served from the in-memory cache built at startup.
     """
-    if not GEOJSON_PATH.exists():
-        raise HTTPException(status_code=500, detail="GeoJSON file not found")
-
-    with open(GEOJSON_PATH, "r", encoding="utf-8") as fh:
-        geo = json.load(fh)
-
-    # Build a lookup: cell_id -> prediction data from the risk endpoint
-    predictions = predict_latest()
-    place_names = load_place_names()
-    pred_lookup = {z["cell_id"]: z for z in predictions["zones"]}
-
-    # Filter to latest month features only (one polygon per cell)
-    latest_month = predictions["generated_at"]  # e.g. "2025-08"
-    latest_features = [
-        f for f in geo["features"]
-        if f.get("properties", {}).get("month") == latest_month
-    ]
-
-    # If the GeoJSON has no month property, fall back to all features
-    if not latest_features:
-        latest_features = geo["features"]
-
-    # Enrich each polygon's properties with prediction data
-    enriched = []
-    for feature in latest_features:
-        cell_id = feature.get("properties", {}).get("cell_id")
-        pred = pred_lookup.get(cell_id, {})
-        feature["properties"].update(
-            {
-                "place_name": pred.get(
-                    "place_name",
-                    place_names.get(cell_id, _name_from_cell_id(cell_id)),
-                ),
-                "stress_prob": pred.get("stress_prob"),
-                "risk_level": pred.get("risk_level"),
-                "ndvi_mean": pred.get("ndvi_mean"),
-                "precip_mm": pred.get("precip_mm"),
-                "temp_c": pred.get("temp_c"),
-            }
-        )
-        # Remove raw month field — not needed by the frontend map layer
-        feature["properties"].pop("month", None)
-        enriched.append(feature)
-
-    return {"type": "FeatureCollection", "features": enriched}
+    if _geojson_cache is None:
+        raise HTTPException(status_code=503, detail="GeoJSON not yet loaded — retry shortly.")
+    return _geojson_cache
 
 
 # ── /api/timeseries ───────────────────────────────────────────────────────────
