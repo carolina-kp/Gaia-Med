@@ -15,7 +15,7 @@ Built as a university project at ESADE, 2025–2026.
 └────────────────────┬────────────────────────────────────┘
                      │  /api/* (Vercel rewrite proxy)
 ┌────────────────────▼────────────────────────────────────┐
-│  FastAPI + Uvicorn  (Fly.io, always-on, Paris region)   │
+│  FastAPI + Uvicorn  (Hugging Face Spaces, Docker SDK)   │
 │                                                         │
 │  Startup sequence:                                      │
 │    1. Load rf_model.pkl into memory                     │
@@ -44,7 +44,7 @@ Built as a university project at ESADE, 2025–2026.
 | Backend | Python 3.11, FastAPI, Uvicorn |
 | ML model | scikit-learn RandomForestClassifier (300 trees) |
 | Data | Google Earth Engine exports (CSV + GeoJSON) |
-| Backend hosting | Fly.io (shared-cpu-1x, 512 MB, always-on, Paris) |
+| Backend hosting | Hugging Face Spaces (Docker SDK, port 7860) |
 | Frontend hosting | Vercel |
 
 ---
@@ -72,13 +72,12 @@ Gaia_Med/
 │   ├── public/          # favicon.svg, manifest.json
 │   ├── .env.example     # Environment variable template
 │   └── vite.config.ts
-├── vercel.json          # Vercel build config + /api/* rewrite to Fly.io
+├── legacy/              # Archived deployment configs (fly.toml, render.yaml, railway.json)
 ├── data/                # Satellite data exports (not committed if large)
 ├── models/              # Trained model weights (rf_model.pkl)
 ├── notebooks/
 │   └── gaia_med_prototype.py  # Original Colab exploration notebook
-├── docker-compose.yml   # Local full-stack development
-└── fly.toml             # Fly.io backend deployment config
+└── docker-compose.yml   # Local full-stack development
 ```
 
 ---
@@ -138,7 +137,7 @@ docker-compose up --build
 |---|---|---|
 | `VITE_API_TARGET` | URL of the FastAPI backend | `http://localhost:8000` |
 
-In production on Vercel, this variable is not needed — `vercel.json` rewrites `/api/*` directly to the Fly.io backend URL.
+In production on Vercel, this variable is not needed — `frontend/vercel.json` rewrites `/api/*` directly to the Hugging Face Spaces backend URL.
 
 ### Backend
 
@@ -174,15 +173,53 @@ The backend uses no environment variables. All configuration is in `backend/conf
 
 ### Frontend (Vercel)
 
-Push to `main` — Vercel auto-deploys. The `/api/*` rewrite in `vercel.json` proxies all API calls to the Fly.io backend. No environment variables are needed in the Vercel dashboard.
+Push to `main` — Vercel auto-deploys. The `/api/*` rewrite in `frontend/vercel.json` proxies all API calls to the Hugging Face Spaces backend. No environment variables are needed in the Vercel dashboard.
 
-### Backend (Fly.io)
+### Backend (Hugging Face Spaces — Docker SDK)
 
-```bash
-# Install the Fly CLI, then from the project root:
-fly auth login
-fly deploy
-fly status
-```
+The backend runs as a Docker Space on [Hugging Face Spaces](https://huggingface.co/spaces). The image is built from `backend/Dockerfile`, which pre-trains the RandomForest model at build time so the container starts instantly. The app listens on port 7860 (required by HF Spaces) and runs as a non-root user.
 
-The Dockerfile pre-trains the model at image build time (`python backend/train.py`), so the container starts with `rf_model.pkl` already present. The app is configured as always-on (`auto_stop_machines = 'off'`, `min_machines_running = 1`) and runs in the Paris region.
+**One-time setup — deploy from scratch:**
+
+1. **Create a Hugging Face account**
+   - Go to [huggingface.co](https://huggingface.co) → click **Sign Up**
+   - Verify your email and choose a username (this becomes part of your Space URL)
+
+2. **Create a new Space**
+   - Go to [huggingface.co/new-space](https://huggingface.co/new-space)
+   - Space name: `gaiamed-backend`
+   - SDK: **Docker** (not Gradio or Streamlit)
+   - Visibility: Public (free tier requirement for always-on)
+   - Click **Create Space**
+
+3. **Clone the Space repo locally**
+   ```bash
+   git clone https://huggingface.co/spaces/YOUR_HF_USERNAME/gaiamed-backend
+   cd gaiamed-backend
+   ```
+
+4. **Copy the backend files into the Space repo**
+   ```bash
+   # From the cloned Space repo directory:
+   cp -r /path/to/Gaia_Med/backend/* .
+   cp -r /path/to/Gaia_Med/data ./data
+   # The README.md inside backend/ already has the required HF YAML frontmatter
+   cp /path/to/Gaia_Med/backend/README.md ./README.md
+   ```
+
+5. **Push to Hugging Face**
+   ```bash
+   git add .
+   git commit -m "Initial deploy"
+   git push
+   ```
+   HF Spaces will automatically build the Docker image and start the container. Build logs are visible in the Space's **Logs** tab. First build takes ~5 minutes (model training included).
+
+6. **Wire the URL into the frontend**
+   - Your Space URL will be: `https://YOUR_HF_USERNAME-gaiamed-backend.hf.space`
+   - Open `frontend/vercel.json` and replace `YOUR_HF_USERNAME` with your actual HF username
+   - Push the change to `main` — Vercel redeploys the frontend automatically
+
+**Subsequent deploys:** push updated files to the HF Space repo — it rebuilds automatically.
+
+> **Note:** Free-tier Spaces sleep after ~15 minutes of inactivity and take ~30 seconds to wake. Upgrade to a paid hardware tier (CPU Basic, $0.05/hr) for always-on behavior.
