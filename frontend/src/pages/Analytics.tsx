@@ -112,7 +112,7 @@ export default function Analytics() {
 
       {/* Row 2 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Panel title="Feature importance" subtitle="Variables driving the forecast (XGBoost gain, normalized).">
+        <Panel title="Feature importance" subtitle="Variables driving the forecast (Random Forest importance, normalized).">
           <div className="h-[320px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={features} layout="vertical" margin={{ top: 4, right: 40, left: 0, bottom: 0 }}>
@@ -179,7 +179,7 @@ export default function Analytics() {
           <div className="mt-4 pt-3 border-t border-border text-[11.5px] text-muted-foreground space-y-1">
             <p>Trained: Mar 2024 – Mar 2025</p>
             <p>Tested: Apr 2025 – Sep 2025</p>
-            <p>Algorithm: XGBoost · 600 trees · depth 6</p>
+            <p>Algorithm: Random Forest · 300 trees · balanced weights</p>
           </div>
         </Panel>
 
