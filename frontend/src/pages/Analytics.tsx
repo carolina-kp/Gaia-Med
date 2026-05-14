@@ -12,17 +12,16 @@ interface TimeseriesPoint {
   predicted: number;
 }
 
-const features = [
-  { name: "NDVI 30d trend",         importance: 22.4, type: "vegetation" },
-  { name: "NDVI seasonal anomaly",  importance: 18.1, type: "vegetation" },
-  { name: "Cumulative rainfall 90d",importance: 14.6, type: "climate" },
-  { name: "Soil moisture anomaly",  importance: 11.2, type: "climate" },
-  { name: "LST anomaly 30d",        importance:  9.8, type: "temperature" },
-  { name: "Heat-degree days",       importance:  7.5, type: "temperature" },
-  { name: "Rainfall variability",   importance:  6.4, type: "climate" },
-  { name: "EVI departure",          importance:  5.1, type: "vegetation" },
-  { name: "Lat / elevation",        importance:  4.9, type: "climate" },
-];
+interface FeaturePoint {
+  name: string;
+  importance: number;
+  type: string;
+}
+
+interface ModelMetrics {
+  test_accuracy: number;
+  test_roc_auc: number;
+}
 const FEATURE_COLORS: Record<string, string> = {
   vegetation: "hsl(var(--sage))",
   climate: "hsl(var(--sand))",
@@ -32,6 +31,8 @@ const FEATURE_COLORS: Record<string, string> = {
 export default function Analytics() {
   const { zones, loading } = useZones();
   const [evolution, setEvolution] = useState<TimeseriesPoint[]>([]);
+  const [features, setFeatures] = useState<FeaturePoint[]>([]);
+  const [metrics, setMetrics] = useState<ModelMetrics | null>(null);
 
   useEffect(() => {
     fetch("https://Pochemucka-gaiamed-backend.hf.space/api/timeseries")
@@ -44,6 +45,29 @@ export default function Analytics() {
             predicted: d.predicted[i],
           }))
         );
+      })
+      .catch(() => {});
+
+    fetch("https://Pochemucka-gaiamed-backend.hf.space/api/risk")
+      .then((r) => r.json())
+      .then((d: { model_metrics: ModelMetrics; feature_importance: Record<string, number> }) => {
+        setMetrics(d.model_metrics);
+        const featureTypeMap: Record<string, string> = {
+          NDVI: "vegetation", EVI: "vegetation", ndvi: "vegetation",
+          precip: "climate", precip_mm: "climate", soil: "climate",
+          temp: "temperature", LST: "temperature", lst: "temperature",
+        };
+        const total = Object.values(d.feature_importance).reduce((a, b) => a + b, 0);
+        const mapped = Object.entries(d.feature_importance)
+          .map(([name, imp]) => {
+            const type = Object.keys(featureTypeMap).find((k) => name.includes(k))
+              ? featureTypeMap[Object.keys(featureTypeMap).find((k) => name.includes(k))!]
+              : "climate";
+            return { name, importance: parseFloat(((imp / total) * 100).toFixed(1)), type };
+          })
+          .sort((a, b) => b.importance - a.importance)
+          .slice(0, 9);
+        setFeatures(mapped);
       })
       .catch(() => {});
   }, []);
@@ -171,10 +195,10 @@ export default function Analytics() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <Panel title="Model performance" subtitle="Held-out test set, stratified by province.">
           <div className="grid grid-cols-2 gap-3">
-            <Metric label="Test accuracy" value="84.6%" />
-            <Metric label="ROC-AUC" value="0.89" accent />
-            <Metric label="Precision (high)" value="81%" />
-            <Metric label="Recall (high)" value="78%" />
+            <Metric label="Test accuracy" value={metrics ? `${(metrics.test_accuracy * 100).toFixed(1)}%` : "…"} />
+            <Metric label="ROC-AUC" value={metrics ? metrics.test_roc_auc.toFixed(3) : "…"} accent />
+            <Metric label="Precision (high)" value="84%" />
+            <Metric label="Recall (high)" value="46%" />
           </div>
           <div className="mt-4 pt-3 border-t border-border text-[11.5px] text-muted-foreground space-y-1">
             <p>Trained: Mar 2024 – Mar 2025</p>
