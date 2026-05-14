@@ -49,6 +49,7 @@ export default function RiskMap() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [warmingUp, setWarmingUp] = useState(false);
   const [warmAttempt, setWarmAttempt] = useState(0);
+  const [aucValue, setAucValue] = useState<string | null>(null);
   const WARM_MAX = 40;
   const layerRef = useRef<L.GeoJSON | null>(null);
 
@@ -84,13 +85,22 @@ export default function RiskMap() {
       setWarmingUp(false);
 
       try {
-        const r = await fetch("https://Pochemucka-gaiamed-backend.hf.space/api/geojson");
-        const ct = r.headers.get("content-type") ?? "";
-        if (!r.ok || !ct.includes("application/json")) {
-          throw new Error(`HTTP ${r.status} — ${ct || "non-JSON response"}`);
+        const [geoRes, riskRes] = await Promise.all([
+          fetch("https://Pochemucka-gaiamed-backend.hf.space/api/geojson"),
+          fetch("https://Pochemucka-gaiamed-backend.hf.space/api/risk"),
+        ]);
+        const ct = geoRes.headers.get("content-type") ?? "";
+        if (!geoRes.ok || !ct.includes("application/json")) {
+          throw new Error(`HTTP ${geoRes.status} — ${ct || "non-JSON response"}`);
         }
-        const data: FeatureCollection<Geometry, ApiGeoProps> = await r.json();
+        const data: FeatureCollection<Geometry, ApiGeoProps> = await geoRes.json();
         if (!cancelled) setGeo(data);
+
+        if (riskRes.ok) {
+          const riskData = await riskRes.json() as { model_metrics?: { test_roc_auc?: number } };
+          const auc = riskData.model_metrics?.test_roc_auc;
+          if (!cancelled && auc != null) setAucValue(auc.toFixed(3));
+        }
       } catch (e) {
         if (!cancelled) setLoadError(String(e));
       }
@@ -273,7 +283,7 @@ export default function RiskMap() {
               <p className="font-display text-sm font-semibold mt-0.5">Random Forest · 300 trees</p>
             </div>
             <div className="px-2.5 py-1 rounded-full bg-sage/15 text-sage text-[11px] font-semibold border border-sage/30">
-              AUC 0.89
+              AUC {aucValue ?? "…"}
             </div>
           </div>
         </div>
