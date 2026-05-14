@@ -13,8 +13,8 @@ interface ApiZone {
 
 let _cache: ZoneRisk[] | null = null;
 
-const MAX_ATTEMPTS = 6;
-const BASE_DELAY_MS = 3000;
+const MAX_ATTEMPTS = 10;
+const BASE_DELAY_MS = 2000;
 
 async function fetchWithRetry(): Promise<ZoneRisk[]> {
   for (let n = 1; n <= MAX_ATTEMPTS; n++) {

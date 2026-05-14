@@ -49,7 +49,7 @@ export default function RiskMap() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [warmingUp, setWarmingUp] = useState(false);
   const [warmAttempt, setWarmAttempt] = useState(0);
-  const WARM_MAX = 20;
+  const WARM_MAX = 40;
   const layerRef = useRef<L.GeoJSON | null>(null);
 
   // Warm-up ping loop: wait for /api/health before fetching heavy GeoJSON
@@ -78,7 +78,7 @@ export default function RiskMap() {
       const ready = await waitForBackend();
       if (cancelled) return;
       if (!ready) {
-        setLoadError("Backend did not respond after 60 seconds. Please refresh.");
+        setLoadError("Backend did not respond after 2 minutes. Please refresh.");
         return;
       }
       setWarmingUp(false);
@@ -334,7 +334,7 @@ export default function RiskMap() {
               )}
               {warmingUp && (
                 <p className="text-[10px] text-muted-foreground/60 text-center max-w-[180px]">
-                  Free-tier server is starting up. This takes ~30 seconds.
+                  Free-tier server is starting up. This can take up to 2 minutes.
                 </p>
               )}
             </div>
