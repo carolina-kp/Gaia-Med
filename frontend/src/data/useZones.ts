@@ -19,7 +19,7 @@ const BASE_DELAY_MS = 2000;
 async function fetchWithRetry(): Promise<ZoneRisk[]> {
   for (let n = 1; n <= MAX_ATTEMPTS; n++) {
     try {
-      const r = await fetch("/api/risk");
+      const r = await fetch("https://Pochemucka-gaiamed-backend.hf.space/api/risk");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = (await r.json()) as { zones: ApiZone[] };
       const list = d.zones.map((z) =>

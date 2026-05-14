@@ -60,7 +60,7 @@ export default function RiskMap() {
       for (let n = 1; n <= WARM_MAX; n++) {
         if (cancelled) return false;
         try {
-          const r = await fetch("/api/health");
+          const r = await fetch("https://Pochemucka-gaiamed-backend.hf.space/api/health");
           if (r.ok) return true;
         } catch {
           // network error — backend still waking up
@@ -84,7 +84,7 @@ export default function RiskMap() {
       setWarmingUp(false);
 
       try {
-        const r = await fetch("/api/geojson");
+        const r = await fetch("https://Pochemucka-gaiamed-backend.hf.space/api/geojson");
         const ct = r.headers.get("content-type") ?? "";
         if (!r.ok || !ct.includes("application/json")) {
           throw new Error(`HTTP ${r.status} — ${ct || "non-JSON response"}`);

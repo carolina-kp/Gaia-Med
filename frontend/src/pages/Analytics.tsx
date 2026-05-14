@@ -34,7 +34,7 @@ export default function Analytics() {
   const [evolution, setEvolution] = useState<TimeseriesPoint[]>([]);
 
   useEffect(() => {
-    fetch("/api/timeseries")
+    fetch("https://Pochemucka-gaiamed-backend.hf.space/api/timeseries")
       .then((r) => r.json())
       .then((d: { months: string[]; observed: number[]; predicted: number[] }) => {
         setEvolution(
